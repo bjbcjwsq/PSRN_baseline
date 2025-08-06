@@ -234,73 +234,79 @@ def evaluate(
         dataset = create_dataset(f, n_var=num_variables, device="cpu", ranges=[lb, ub], 
                                  train_num=sample_num, func_type="numpy", distribution=distribution)
         for idx in range(repeat_times):
-            prev = datetime.datetime.now()
-            X = dataset["train_input"]
-            y = dataset["train_label"]
-            # to tensor
-            X = torch.tensor(X, dtype=torch.float32)
-            y = torch.tensor(y, dtype=torch.float32)
-            qsrn_regressor = PSRN_Regressor(variables=variables_name,
-                                        operators=ops,
-                                        n_symbol_layers=3,
-                                        n_inputs=n_inputs,
-                                        use_const=True,
-                                        trying_const_num=3,
-                                        trying_const_range=[-10,10],
-                                        trying_const_n_try=1,
-                                        device='cuda',
-                                        )
-            
-            flag, pareto = qsrn_regressor.fit(X,
-                                        y,
-                                        n_down_sample=50,
-                                        n_step_simulation=5,
-                                        use_threshold=False,
-                                        real_time_display_freq=1,
-                                        prun_ndigit=3,
-                                        top_k=10,
-                                        add_bias=True,
-                                        )
-            
-            "dr_mask/3_6_[Add_Mul_Identity_Pow2_Pow3_Inv_Neg_Cos_Cosh_Exp_Log_Sin_Tanh_Sqrt]_mask.npy"
-            
-            import sympy as sp
+            while True:
+                try:
+                    prev = datetime.datetime.now()
+                    X = dataset["train_input"]
+                    y = dataset["train_label"]
+                    # to tensor
+                    X = torch.tensor(X, dtype=torch.float32)
+                    y = torch.tensor(y, dtype=torch.float32)
+                    qsrn_regressor = PSRN_Regressor(variables=variables_name,
+                                                operators=ops,
+                                                n_symbol_layers=3,
+                                                n_inputs=n_inputs,
+                                                use_const=True,
+                                                trying_const_num=3,
+                                                trying_const_range=[-10,10],
+                                                trying_const_n_try=1,
+                                                device='cuda',
+                                                )
+                    
+                    flag, pareto = qsrn_regressor.fit(X,
+                                                y,
+                                                n_down_sample=50,
+                                                n_step_simulation=5,
+                                                use_threshold=False,
+                                                real_time_display_freq=1,
+                                                prun_ndigit=3,
+                                                top_k=10,
+                                                add_bias=True,
+                                                )
+                    
+                    "dr_mask/3_6_[Add_Mul_Identity_Pow2_Pow3_Inv_Neg_Cos_Cosh_Exp_Log_Sin_Tanh_Sqrt]_mask.npy"
+                    
+                    import sympy as sp
 
-            crit = "mse"
-            pareto_ls = qsrn_regressor.display_expr_table(sort_by=crit)
-            expr_str, reward, loss, complexity = pareto_ls[0]
-            expr_str_best_MSE = expr_str
-            expr_sympy_best_MSE = sp.simplify(expr_str)
+                    crit = "mse"
+                    pareto_ls = qsrn_regressor.display_expr_table(sort_by=crit)
+                    expr_str, reward, loss, complexity = pareto_ls[0]
+                    expr_str_best_MSE = expr_str
+                    expr_sympy_best_MSE = sp.simplify(expr_str)
 
-            eq_pred = expr_to_func(expr_sympy_best_MSE, variables=variables)
+                    eq_pred = expr_to_func(expr_sympy_best_MSE, variables=variables)
 
-            # to numpy
-            X = np.array(X)
-            y = np.array(y)
+                    # to numpy
+                    X_np = np.array(X)
+                    y_np = np.array(y)
 
-            y_pred = np.zeros_like(y)
-            for i in range(X.shape[0]):
-                y_pred[i] = eq_pred(*X[i])
+                    y_pred = np.zeros_like(y_np)
+                    for i in range(X_np.shape[0]):
+                        y_pred[i] = eq_pred(*X_np[i])
 
-            r2 = r2_score(y, y_pred)
-            mae = np.mean(np.abs(y - y_pred))
+                    r2 = r2_score(y_np, y_pred)
+                    mae = np.mean(np.abs(y_np - y_pred))
 
-            print(idx)
-            print(name)
-            print(eq)
-            print(r2, mae)
-            print(datetime.datetime.now() - prev)
-            info_dict = {
-                "idx": idx,
-                "name": name,
-                "eq": str(expr_str),
-                "r2": r2,
-                "mae": mae,
-            }
-            # 将info_dict写入benchresult.csv文件,csv文件的表头为info_dict的key
-            with open(f"benchresult_easy_{NOISE_LEVEL}_{file_idx}.csv", "a", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=info_dict.keys())
-                writer.writerow(info_dict)
+                    print(idx)
+                    print(name)
+                    print(eq)
+                    print(r2, mae)
+                    print(datetime.datetime.now() - prev)
+                    info_dict = {
+                        "idx": idx,
+                        "name": name,
+                        "eq": str(expr_str),
+                        "r2": r2,
+                        "mae": mae,
+                    }
+                    # 将info_dict写入benchresult.csv文件,csv文件的表头为info_dict的key
+                    with open(f"benchresult_easy_{NOISE_LEVEL}_{file_idx}.csv", "a", newline="") as f:
+                        writer = csv.DictWriter(f, fieldnames=info_dict.keys())
+                        writer.writerow(info_dict)
+                    break
+                except (KeyError, ValueError) as e:
+                    print(f"Error occurred: {e}, retrying...")
+                    continue
 
 
     # print(datetime.datetime.now() - starting_time)
