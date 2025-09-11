@@ -23,6 +23,9 @@ from model.regressor import PSRN_Regressor
 import warnings
 warnings.filterwarnings("ignore")
 
+NOISE_LEVEL = 0.0
+
+os.environ['CUDA_VISIBLE_DEVICES'] = str("1")
 
 def process_benchmark(expression):
     pow_regexp = r"pow\((.*?),(.*?)\)"
@@ -36,42 +39,21 @@ def process_benchmark(expression):
     # processed = processed.replace("x2", "y")
     return processed
 
-os.environ['CUDA_VISIBLE_DEVICES'] = str("0")
+
 def open_csv(file_name: str):
     equations = []
     with open(file_name) as csvfile:
         reader = csv.DictReader(csvfile, delimiter=",")
         for row in reader:
-            if len(row["# variables"]) == 0:
-                continue
-            name = row["\ufeffFilename"]
-            formula = row["Formula"].replace("gamma", "Gamma").replace("I", "ii").replace("beta", "Beta")
-            num_variables = int(row["# variables"])
-            sample_num = 100
-            var_info = {}
-            for i in range(num_variables):
-                var_i_lb = row[f"v{i+1}_low"]
-                var_i_ub = row[f"v{i+1}_high"]
-                var_i_name = row[f"v{i+1}_name"].replace("gamma", "Gamma").replace("I", "ii").replace("beta", "Beta")
-                var_info[var_i_name] = [float(var_i_lb), float(var_i_ub)]
-            assert num_variables == len(var_info.keys()), "Number of variables does not match for equation: " + name
-            eq = process_benchmark(formula)
-            var_names = ""
-            for i in range(num_variables):
-                var_names += list(var_info.keys())[i]
-                if i != num_variables - 1:
-                    var_names += ","
-            eq_number = int(row['Number'])
-
             equations.append(
                 (
-                    name,
-                    num_variables,
-                    eq,
-                    var_info,
-                    sample_num,
-                    var_names,
-                    eq_number
+                    row["name"],
+                    int(row["variables"]),
+                    process_benchmark(row["expression"]),
+                    "u",
+                    float(row["lb"]),
+                    float(row["ub"]),
+                    int(row["sample_num"]),
                 )
             )
     return equations
@@ -176,6 +158,10 @@ def create_dataset(f,
         train_label[i] = f(*list(train_input[i]))
     for i in range(test_num):
         test_label[i] = f(*list(test_input[i]))
+
+    y_rms = ((train_label ** 2).mean()) ** 0.5
+    epsilon = NOISE_LEVEL * np.random.normal(0, y_rms, len(train_label)).reshape(-1, 1)
+    train_label = train_label + epsilon
         
     # if has only 1 dimension
     if len(train_label.shape) == 1:
@@ -207,51 +193,17 @@ def create_dataset(f,
     return dataset
 
 
-os.environ['CUDA_VISIBLE_DEVICES'] = str("0")
 # @command("evaluate-benchmark")
 def evaluate(
     benchmark_path: t.Optional[str] = None,
     repeat_times: int = 10,
 ):
     
-    for i, (name, num_variables, eq, var_info, sample_num, var_names, eq_number) in enumerate(open_csv(benchmark_path)):
-
-        run = False
-        
-
-        # PTS_01
-        # iii=2 # 1-2
-
-        # # if eq_number in [47,48,49]:
-        # #     run = True
-        # #     os.environ['CUDA_VISIBLE_DEVICES'] = str("0")
-
-
-        # # PTS_10
-        # if eq_number in [1]:
-        #     run = True
-        #     os.environ['CUDA_VISIBLE_DEVICES'] = str("1")
-        run = True
-        iii = 1
-        
-        
-        if not run:
-            continue
-
+    for i, (name, num_variables, eq, distribution, lb, ub, sample_num) in enumerate(open_csv(benchmark_path)):
         ops = ['Add','Mul','SemiSub','SemiDiv','Identity','Sign','Sin','Cos','Exp','Log']
         sym_eq = sympify(eq)
         num_variables = int(num_variables)
         variables = symbols("x,y")if num_variables == 2 else symbols("x")
-
-        sym_eq = sympify(eq)
-        num_variables = int(num_variables)
-        variables = symbols(var_names)
-        f = expr_to_func(sym_eq, variables=variables)
-        ranges = []
-        for vn in var_info.keys():
-            ranges.append(var_info[vn])
-        dataset = create_dataset(f, n_var=num_variables, ranges=ranges, train_num=sample_num, func_type="numpy")
-
 
         variables_str = ""
         variables_name = []
@@ -264,95 +216,89 @@ def evaluate(
 
         n_inputs = 5
 
-        if num_variables >= 1 and num_variables < 8:
+        if num_variables >= 3:
             # path = "dr_mask/3_9_[Add_Mul_Identity_Neg_Inv_Sin_Cos_Log]_mask.npy"
             n_inputs = 9
             ops = ['Add','Mul','Identity','Neg','Inv','Sin','Cos','Log']
-            udm=True
-            trying_const_num=3
-            use_const=True
-        
-        if num_variables >= 8:
-            n_inputs = 9
-            ops = ['Add','Mul','Identity','Neg','Inv','Sin','Cos','Log']
-            udm=True
-            trying_const_num=0
-            use_const=  True
 
 
-
-        
-
-
+        f = expr_to_func(sym_eq, variables=variables)
+        dataset = create_dataset(f, n_var=num_variables, device="cpu", ranges=[lb, ub], 
+                                 train_num=sample_num, func_type="numpy", distribution=distribution)
         for idx in range(repeat_times):
-            prev = datetime.datetime.now()
-            X = dataset["train_input"]
-            y = dataset["train_label"]
-            # to tensor
-            X = torch.tensor(X, dtype=torch.float32)
-            y = torch.tensor(y, dtype=torch.float32)
-            qsrn_regressor = PSRN_Regressor(variables=variables_name,
-                                        operators=ops,
-                                        n_symbol_layers=3,
-                                        n_inputs=n_inputs,
-                                        use_const=use_const,
-                                        trying_const_num=trying_const_num,
-                                        trying_const_range=[-10,10],
-                                        trying_const_n_try=1,
-                                        device='cuda',
-                                        use_dr_mask=udm
-                                        )
-            
-            flag, pareto = qsrn_regressor.fit(X,
-                                        y,
-                                        n_down_sample=100,
-                                        n_step_simulation=5,
-                                        use_threshold=False,
-                                        real_time_display_freq=1,
-                                        prun_ndigit=3,
-                                        top_k=10,
-                                        add_bias=True,
-                                        )
-            
-            "dr_mask/3_6_[Add_Mul_Identity_Pow2_Pow3_Inv_Neg_Cos_Cosh_Exp_Log_Sin_Tanh_Sqrt]_mask.npy"
-            
-            import sympy as sp
+            while True:
+                try:
+                    prev = datetime.datetime.now()
+                    X = dataset["train_input"]
+                    y = dataset["train_label"]
+                    # to tensor
+                    X = torch.tensor(X, dtype=torch.float32)
+                    y = torch.tensor(y, dtype=torch.float32)
+                    qsrn_regressor = PSRN_Regressor(variables=variables_name,
+                                                operators=ops,
+                                                n_symbol_layers=3,
+                                                n_inputs=n_inputs,
+                                                use_const=True,
+                                                trying_const_num=3,
+                                                trying_const_range=[-10,10],
+                                                trying_const_n_try=1,
+                                                device='cuda',
+                                                )
+                    
+                    flag, pareto = qsrn_regressor.fit(X,
+                                                y,
+                                                n_down_sample=50,
+                                                n_step_simulation=5,
+                                                use_threshold=False,
+                                                real_time_display_freq=1,
+                                                prun_ndigit=3,
+                                                top_k=10,
+                                                add_bias=True,
+                                                )
+                    
+                    "dr_mask/3_6_[Add_Mul_Identity_Pow2_Pow3_Inv_Neg_Cos_Cosh_Exp_Log_Sin_Tanh_Sqrt]_mask.npy"
+                    
+                    import sympy as sp
 
-            crit = "mse"
-            pareto_ls = qsrn_regressor.display_expr_table(sort_by=crit)
-            expr_str, reward, loss, complexity = pareto_ls[0]
-            expr_str_best_MSE = expr_str
-            expr_sympy_best_MSE = sp.simplify(expr_str)
+                    crit = "mse"
+                    pareto_ls = qsrn_regressor.display_expr_table(sort_by=crit)
+                    expr_str, reward, loss, complexity = pareto_ls[0]
+                    expr_str_best_MSE = expr_str
+                    expr_sympy_best_MSE = sp.simplify(expr_str)
 
-            eq_pred = expr_to_func(expr_sympy_best_MSE, variables=variables)
+                    eq_pred = expr_to_func(expr_sympy_best_MSE, variables=variables)
 
-            # to numpy
-            X = np.array(X)
-            y = np.array(y)
+                    # to numpy
+                    X_np = np.array(X)
+                    y_np = np.array(y)
 
-            y_pred = np.zeros_like(y)
-            for i in range(X.shape[0]):
-                y_pred[i] = eq_pred(*X[i])
+                    y_pred = np.zeros_like(y_np)
+                    for i in range(X_np.shape[0]):
+                        y_pred[i] = eq_pred(*X_np[i])
 
-            r2 = r2_score(y, y_pred)
-            mae = np.mean(np.abs(y - y_pred))
+                    r2 = r2_score(y_np, y_pred)
+                    mae = np.mean(np.abs(y_np - y_pred))
 
-            print(idx)
-            print(name)
-            print(eq)
-            print(r2, mae)
-            print(datetime.datetime.now() - prev)
-            info_dict = {
-                "idx": idx,
-                "name": name,
-                "eq": str(expr_str),
-                "r2": r2,
-                "mae": mae,
-            }
-            # 将info_dict写入benchresult.csv文件,csv文件的表头为info_dict的key
-            with open(f"benchresult_feyn_{2}.csv", "a", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=info_dict.keys())
-                writer.writerow(info_dict)
+                    print(idx)
+                    print(name)
+                    print(eq)
+                    print(r2, mae)
+                    print(datetime.datetime.now() - prev)
+                    info_dict = {
+                        "idx": idx,
+                        "name": name,
+                        "eq": str(expr_str),
+                        "r2": r2,
+                        "mae": mae,
+                    }
+                    # 将info_dict写入benchresult.csv文件,csv文件的表头为info_dict的key
+                    with open(f"benchresult_easy_{NOISE_LEVEL}.csv", "a", newline="") as f:
+                        writer = csv.DictWriter(f, fieldnames=info_dict.keys())
+                        writer.writerow(info_dict)
+                    break
+                except (KeyError, ValueError) as e:
+                    print(f"Error occurred: {e}, retrying...")
+                    continue
 
 
     # print(datetime.datetime.now() - starting_time)
@@ -362,4 +308,4 @@ def evaluate(
 
 
 if __name__ == "__main__":
-    evaluate(benchmark_path="FeynmanEquations_2.csv")
+    evaluate(f"random.csv", repeat_times=10)
